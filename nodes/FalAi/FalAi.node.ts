@@ -47,6 +47,12 @@ interface OpenAPISchema {
 	components?: {
 		schemas?: Record<string, SchemaDefinition>;
 	};
+	paths?: Record<string, Record<string, OpenAPIOperation>>;
+}
+
+interface OpenAPIOperation {
+	requestBody?: { content?: Record<string, { schema?: { $ref?: string } }> };
+	responses?: Record<string, { content?: Record<string, { schema?: { $ref?: string } }> }>;
 }
 
 interface SchemaDefinition {
@@ -149,16 +155,35 @@ function parseOpenAPISchema(model: FalModel): ParsedModelInfo {
 	const falMetadata = openapi?.['x-fal-metadata'];
 	const schemas = openapi?.components?.schemas || {};
 
+	// The submit request body and the result response name the endpoint's own
+	// schemas. Matching on `Input`/`Output` alone can pick a nested type instead
+	// (Kling's `KlingV3ComboElementInput`), so names are only a fallback.
+	const schemaFromRef = (ref: string | undefined): SchemaDefinition | undefined => {
+		const prefix = '#/components/schemas/';
+		return ref?.startsWith(prefix) ? schemas[ref.slice(prefix.length)] : undefined;
+	};
 	let inputSchema: SchemaDefinition | undefined;
 	let outputSchema: SchemaDefinition | undefined;
-
-	for (const [name, schema] of Object.entries(schemas)) {
-		if (name.endsWith('Input') && !name.includes('Queue')) {
-			inputSchema = schema;
-		} else if (name.endsWith('Output') && !name.includes('Queue')) {
-			outputSchema = schema;
+	for (const [path, operations] of Object.entries(openapi?.paths || {})) {
+		const submit = operations.post?.requestBody?.content?.['application/json']?.schema?.$ref;
+		inputSchema = inputSchema || schemaFromRef(submit);
+		if (path.endsWith('/requests/{request_id}')) {
+			const result = operations.get?.responses?.['200']?.content?.['application/json']?.schema?.$ref;
+			outputSchema = outputSchema || schemaFromRef(result);
 		}
 	}
+
+	let inputByName: SchemaDefinition | undefined;
+	let outputByName: SchemaDefinition | undefined;
+	for (const [name, schema] of Object.entries(schemas)) {
+		if (name.endsWith('Input') && !name.includes('Queue')) {
+			inputByName = schema;
+		} else if (name.endsWith('Output') && !name.includes('Queue')) {
+			outputByName = schema;
+		}
+	}
+	inputSchema = inputSchema || inputByName;
+	outputSchema = outputSchema || outputByName;
 
 	const parseProperties = (
 		schema: SchemaDefinition | undefined,
